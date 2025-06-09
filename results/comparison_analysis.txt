@@ -1,0 +1,23 @@
+=========================================
+   IOLIN vs. OLIN Performance Analysis   
+=========================================
+
+--- Overall Performance Metrics ---
+
+                                 OLIN        IOLIN
+Avg Error Rate               0.642065     0.644849
+Avg Processing Time (s)     46.365696    10.671046
+Total Time (s)           19983.614799  4599.220817
+
+
+--- Statistical Significance (Paired T-Test) ---
+
+Comparing Processing Times:
+  T-statistic: 23.8302
+  P-value: 0.0000
+  Conclusion: The difference in processing time is statistically significant.
+
+Comparing Error Rates:
+  T-statistic: -0.3640
+  P-value: 0.7160
+  Conclusion: The difference in error rate is NOT statistically significant.
