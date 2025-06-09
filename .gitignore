@@ -38,9 +38,4 @@ venv.bak/
 .cproject
 
 # Data and results
-data/raw/*
-data/processed/*
-results/*
-!data/raw/.gitkeep
-!data/processed/.gitkeep
-!results/.gitkeep
+
