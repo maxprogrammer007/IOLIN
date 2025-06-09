@@ -35,7 +35,7 @@ class InformationNetwork:
         self.second_best_attributes = {} # Store second best attribute for each layer for IOLIN
         self.significance_level = significance_level
         self.target_attribute = None
-        self.input_attributes = None
+        self.input_attributes_with_uniques = None # Will store dict of {attr: [unique_vals]}
 
     def _calculate_entropy(self, data_series):
         """Calculates the entropy of a pandas Series."""
@@ -64,17 +64,14 @@ class InformationNetwork:
         Performs a likelihood-ratio G-test to check if a split is statistically significant.
         This is distributed as chi-square.
         """
-        if data_df.empty:
+        if data_df.empty or len(data_df) < 5: # Added minimum size check
             return False, 1.0
 
-        # Create a contingency table (observed frequencies)
         contingency_table = pd.crosstab(data_df[attribute], data_df[target_attr])
         
-        # The G-test is not reliable for tables with a row or column of all zeros.
         if 0 in contingency_table.sum(axis=0).values or 0 in contingency_table.sum(axis=1).values:
             return False, 1.0
         
-        # Use scipy's built-in function for the G-test (log-likelihood)
         g_stat, p_value, dof, expected = chi2_contingency(contingency_table, lambda_="log-likelihood")
 
         if dof <= 0:
@@ -83,28 +80,23 @@ class InformationNetwork:
         is_significant = p_value < self.significance_level
         return is_significant, p_value
 
-
-    def fit(self, data, input_attributes, target_attribute):
+    def fit(self, data, input_attributes_with_uniques, target_attribute):
         """Builds the Information Network from the training data."""
         self.target_attribute = target_attribute
-        self.input_attributes = input_attributes
+        self.input_attributes_with_uniques = input_attributes_with_uniques
+        self.layers = []
+        self.second_best_attributes = {}
+
+        # --- STAGE 1: Determine the optimal sequence of attributes for the layers ---
+        remaining_attributes = list(self.input_attributes_with_uniques.keys())
         
-        # Initialize root node
-        initial_distribution = data[target_attribute].value_counts(normalize=True)
-        self.root = IN_Node(is_terminal=True, target_distribution=initial_distribution)
-        
-        terminal_nodes = [self.root]
-        remaining_attributes = list(input_attributes)
-        
-        while terminal_nodes and remaining_attributes:
+        while remaining_attributes:
             best_mi = -1
             best_attribute = None
             second_best_attribute = None
             second_best_mi = -1
 
-            # --- Find the best attribute to create the next layer ---
             for attr in remaining_attributes:
-                # Check significance on the whole dataset for the potential layer
                 is_significant, _ = self._is_split_significant(data, attr, target_attribute)
                 if is_significant:
                     mi = self._calculate_mutual_information(data, attr, target_attribute)
@@ -116,88 +108,94 @@ class InformationNetwork:
                     elif mi > second_best_mi:
                         second_best_mi = mi
                         second_best_attribute = attr
-
-            if best_attribute is None:
-                # No significant attribute found, stop building
-                break
-                
-            self.layers.append(best_attribute)
-            self.second_best_attributes[len(self.layers) -1] = second_best_attribute
-            remaining_attributes.remove(best_attribute)
             
-            # --- Split the terminal nodes on the best attribute ---
-            new_terminal_nodes = []
-            
-            # Since this is an "oblivious" tree, all nodes at a given level are split by the same attribute.
-            # We iterate through the existing terminal nodes and replace them with sub-networks.
-            nodes_to_split = terminal_nodes
-            terminal_nodes = []
+            if best_attribute:
+                self.layers.append(best_attribute)
+                self.second_best_attributes[len(self.layers) - 1] = second_best_attribute
+                remaining_attributes.remove(best_attribute)
+            else:
+                break # No more significant attributes found
+        
+        # --- STAGE 2: Build the network structure based on the determined layers ---
+        print(f"IN model building with layers: {self.layers}")
+        self.root = self._build_network_recursive(data, self.layers)
+        print("IN model built successfully.")
 
-            for node in nodes_to_split:
-                node.is_terminal = False
-                node.split_attribute = best_attribute
-                
-                for value in sorted(data[best_attribute].unique()):
-                    subset = data[data[best_attribute] == value]
-                    if subset.empty:
-                        continue
-                        
-                    child_distribution = subset[self.target_attribute].value_counts(normalize=True)
-                    child_node = IN_Node(is_terminal=True, target_distribution=child_distribution)
-                    node.children[value] = child_node
-                    terminal_nodes.append(child_node)
+    def _build_network_recursive(self, data_subset, layers_to_build):
+        """Recursively builds the network structure."""
+        if data_subset.empty:
+            return None 
             
-        print(f"IN model built. Layers: {self.layers}")
+        target_dist = data_subset[self.target_attribute].value_counts(normalize=True)
 
+        if not layers_to_build:
+            return IN_Node(is_terminal=True, target_distribution=target_dist)
+
+        split_attr = layers_to_build[0]
+        remaining_layers = layers_to_build[1:]
+        
+        node = IN_Node(split_attribute=split_attr, target_distribution=target_dist)
+        
+        # FIX: Using the dictionary of unique values passed during fit()
+        for value in self.input_attributes_with_uniques[split_attr]:
+            child_data = data_subset[data_subset[split_attr] == value]
+            child_node = self._build_network_recursive(child_data, remaining_layers)
+            
+            # If a path has no data, create a terminal node using the parent's distribution
+            if child_node is None:
+                node.children[value] = IN_Node(is_terminal=True, target_distribution=target_dist)
+            else:
+                node.children[value] = child_node
+        
+        return node
 
     def predict(self, data):
-        """Predicts the target for a new dataset."""
+        """Predicts the target for a new dataset using an efficient apply method."""
         if self.root is None:
             raise Exception("Model has not been trained yet. Call fit() first.")
         
-        predictions = []
-        for _, row in data.iterrows():
-            current_node = self.root
-            for layer_attr in self.layers:
-                value = row.get(layer_attr)
-                if value in current_node.children:
-                    current_node = current_node.children[value]
-                else:
-                    # Value not seen during training, break and use current node's prediction
-                    break
-            predictions.append(current_node.get_prediction())
-            
-        return predictions
+        # Ensure data only has the columns the model was trained on
+        model_input_cols = list(self.input_attributes_with_uniques.keys())
+        return data[model_input_cols].apply(self._predict_single_row, axis=1).tolist()
+
+    def _predict_single_row(self, row):
+        """Helper to predict a single row."""
+        current_node = self.root
+        for layer_attr in self.layers:
+            value = row.get(layer_attr)
+            if value is not None and value in current_node.children:
+                current_node = current_node.children[value]
+            else:
+                # If path doesn't exist (e.g., value not seen for this specific sub-path),
+                # use the current node's distribution for prediction.
+                break
+        return current_node.get_prediction()
 
 if __name__ == '__main__':
-    # --- Example Usage and Test ---
     print("Running a test on the InformationNetwork implementation...")
 
-    # Load the processed data
     try:
         df = pd.read_csv(os.path.join("data", "processed", "processed_beijing_pm25.csv"))
     except FileNotFoundError:
         print("Error: Processed data file not found. Please run src/data_loader.py first.")
         exit()
 
-    # Define attributes
     target_col = 'Target'
-    # Ensure 'datetime' is not treated as an input attribute if it exists
-    input_cols = [col for col in df.columns if col not in [target_col, 'datetime', 'Unnamed: 0']]
+    input_cols_list = [col for col in df.columns if col not in [target_col, 'datetime', 'Unnamed: 0']]
+    
+    # Store unique values for each attribute for the builder
+    input_cols_with_uniques = {col: df[col].unique() for col in input_cols_list}
 
-
-    # Use a small sample for a quick test
     train_data = df.sample(n=1000, random_state=42)
 
-    # Initialize and fit the model
     model = InformationNetwork(significance_level=0.01)
-    model.fit(train_data, input_cols, target_col)
-
-    # Make predictions on a test set
-    test_data = df.sample(n=100, random_state=1)
-    preds = model.predict(test_data[input_cols])
     
-    # Calculate accuracy
+    # FIX: Pass the dictionary of unique values directly to the fit method
+    model.fit(train_data, input_cols_with_uniques, target_col)
+
+    test_data = df.sample(n=100, random_state=1)
+    preds = model.predict(test_data) # Pass the whole dataframe
+    
     actual = test_data[target_col].tolist()
     correct = sum(1 for p, a in zip(preds, actual) if p == a)
     accuracy = correct / len(preds)
@@ -205,5 +203,6 @@ if __name__ == '__main__':
     print(f"\nTest Prediction for first 5 rows: {preds[:5]}")
     print(f"Actual values for first 5 rows:   {actual[:5]}")
     print(f"Test Accuracy: {accuracy:.2f}")
+
     print("Test completed successfully.")
     print("Information Network implementation is working as expected.")
