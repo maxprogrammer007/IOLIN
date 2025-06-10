@@ -1,19 +1,17 @@
 # src/iolin_lstm.py
-# The state-of-the-art implementation using a Keras LSTM model.
-# This version includes data scaling for optimal performance.
+# The state-of-the-art implementation using a powerful ConvLSTM model.
 
 import pandas as pd
 import numpy as np
 import time
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.layers import Conv1D, MaxPooling1D, LSTM, Dense, Dropout, Flatten
 from .iolin_deep_learning_utils import create_lstm_sequences
 from sklearn.preprocessing import MinMaxScaler
 
 class IOLIN_LSTM:
     """
-    A state-of-the-art online model using a Keras LSTM network.
-    Includes data scaling for optimal performance.
+    A state-of-the-art online model using a Keras ConvLSTM network.
     """
     def __init__(self, n_steps, n_features, n_classes, model_params=None):
         self.n_steps = n_steps
@@ -23,17 +21,25 @@ class IOLIN_LSTM:
         self.scaler = MinMaxScaler() # Initialize the scaler
 
         if model_params is None:
-            self.model_params = {'epochs': 20, 'batch_size': 64, 'verbose': 0} # More epochs
+            self.model_params = {'epochs': 30, 'batch_size': 64, 'verbose': 0} # More epochs for complex model
         else:
             self.model_params = model_params
 
     def _build_model(self):
-        """Builds the Keras LSTM model architecture."""
+        """Builds the Keras ConvLSTM model architecture."""
         model = Sequential()
-        model.add(LSTM(100, activation='relu', return_sequences=True, input_shape=(self.n_steps, self.n_features)))
+        # --- IMPROVEMENT: Using a Conv1D layer as a feature extractor ---
+        model.add(Conv1D(filters=64, kernel_size=3, activation='relu', input_shape=(self.n_steps, self.n_features)))
+        model.add(Conv1D(filters=64, kernel_size=3, activation='relu'))
+        model.add(MaxPooling1D(pool_size=2))
+        
+        # --- The LSTM layers now learn from the extracted features ---
+        model.add(LSTM(100, activation='relu', return_sequences=True))
         model.add(Dropout(0.3))
         model.add(LSTM(50, activation='relu'))
         model.add(Dropout(0.3))
+        
+        # --- Final classification layer ---
         model.add(Dense(self.n_classes, activation='softmax'))
         model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
         self.model = model
@@ -43,9 +49,7 @@ class IOLIN_LSTM:
         if self.model is None:
             self._build_model()
         
-        # --- IMPROVEMENT: Scale the data ---
         input_cols = [col for col in data.columns if col != target_attribute]
-        # Fit the scaler ONLY on the training data and transform it
         data_scaled = data.copy()
         data_scaled[input_cols] = self.scaler.fit_transform(data[input_cols])
         
@@ -62,7 +66,6 @@ class IOLIN_LSTM:
         if self.model is None:
             return None
 
-        # --- IMPROVEMENT: Scale the new data using the FITTED scaler ---
         input_cols = [col for col in data.columns if col != target_attribute]
         data_scaled = data.copy()
         data_scaled[input_cols] = self.scaler.transform(data[input_cols])
@@ -90,7 +93,7 @@ class IOLIN_LSTM:
 
     def process_data_stream(self, data_stream, target_attribute, window_size, step_size):
         """
-        Processes the data stream by rebuilding the scaled LSTM model on each window.
+        Processes the data stream by rebuilding the ConvLSTM model on each window.
         """
         num_records = len(data_stream)
         current_pos = 0
@@ -104,7 +107,7 @@ class IOLIN_LSTM:
             if train_data.empty or validation_data.empty:
                 break
             
-            print(f"  Building LSTM model for window [{current_pos}-{current_pos + window_size}]...")
+            print(f"  Building ConvLSTM model for window [{current_pos}-{current_pos + window_size}]...")
             self.fit(train_data, target_attribute)
             
             error = self._calculate_error_rate(validation_data, target_attribute)
