@@ -11,7 +11,8 @@ import pandas as pd
 import numpy as np
 import os
 import time
-from information_network import InformationNetwork
+# FIX: Changed to a relative import to work correctly within the 'src' package
+from .information_network import InformationNetwork
 from scipy.stats import norm
 
 class IOLIN:
@@ -25,13 +26,14 @@ class IOLIN:
         self.target_attribute = target_attribute
         self.significance_level = significance_level
         self.model = None # The current InformationNetwork model
+        self.last_training_data = None # Store the data used for the last training/rebuild
 
-    def _calculate_error_rate(self, data):
-        """Calculates the classification error rate of the current model on given data."""
-        if self.model is None or data.empty:
+    def _calculate_error_rate(self, data, model_to_use):
+        """Calculates the classification error rate of a given model on given data."""
+        if model_to_use is None or data.empty:
             return 1.0 # Max error if no model or data
         
-        predictions = self.model.predict(data)
+        predictions = model_to_use.predict(data)
         actuals = data[self.target_attribute].tolist()
         correct = sum(1 for p, a in zip(predictions, actuals) if p == a)
         return 1.0 - (correct / len(predictions)) if len(predictions) > 0 else 1.0
@@ -76,11 +78,13 @@ class IOLIN:
         # --- Initial Model Creation ---
         print("Building initial model...")
         initial_train_data = data_stream.iloc[current_pos : current_pos + window_size]
+        self.last_training_data = initial_train_data.copy()
+        
         self.model = InformationNetwork(significance_level=self.significance_level)
-        self.model.fit(initial_train_data, self.input_attributes_with_uniques, self.target_attribute)
+        self.model.fit(initial_train_data, list(self.input_attributes_with_uniques.keys()), self.target_attribute)
         
         # The first "previous error" is the error on the initial training data itself
-        prev_error = self._calculate_error_rate(initial_train_data)
+        prev_error = self._calculate_error_rate(initial_train_data, self.model)
         prev_window_size = len(initial_train_data)
         current_pos += window_size
 
@@ -92,7 +96,7 @@ class IOLIN:
                 break
                 
             # --- Drift Detection Step ---
-            current_error = self._calculate_error_rate(validation_window)
+            current_error = self._calculate_error_rate(validation_window, self.model)
             is_drift = self._detect_concept_drift(prev_error, current_error, prev_window_size, len(validation_window))
             
             action_taken = ""
@@ -102,13 +106,14 @@ class IOLIN:
                 if len(rebuild_train_data) < window_size:
                     break
                 self.model = InformationNetwork(significance_level=self.significance_level)
-                self.model.fit(rebuild_train_data, self.input_attributes_with_uniques, self.target_attribute)
+                self.model.fit(rebuild_train_data, list(self.input_attributes_with_uniques.keys()), self.target_attribute)
+                self.last_training_data = rebuild_train_data.copy()
             else:
                 action_taken = "Updated"
                 self._update_current_network()
             
             # Update the previous error for the next iteration
-            prev_error = current_error
+            prev_error = self._calculate_error_rate(validation_window, self.model)
             prev_window_size = len(validation_window)
 
             end_time = time.time()
@@ -124,50 +129,3 @@ class IOLIN:
             }
 
             current_pos += step_size
-
-
-if __name__ == '__main__':
-    print("Running a test on the final IOLIN implementation...")
-
-    try:
-        df = pd.read_csv(os.path.join("data", "processed", "processed_beijing_pm25.csv"))
-    except FileNotFoundError:
-        print("Error: Processed data file not found. Please run src/data_loader.py first.")
-        exit()
-
-    test_stream_data = df.head(3000)
-
-    target_col = 'Target'
-    input_cols_list = [col for col in df.columns if col not in [target_col, 'datetime', 'Unnamed: 0']]
-    input_cols_with_uniques = {col: df[col].unique() for col in input_cols_list}
-
-    WINDOW_SIZE = 500
-    STEP_SIZE = 100
-
-    iolin_processor = IOLIN(input_cols_with_uniques, target_col, significance_level=0.05)
-
-    results = []
-    print(f"Processing data stream with window_size={WINDOW_SIZE} and step_size={STEP_SIZE}...")
-    for result in iolin_processor.process_data_stream(test_stream_data, WINDOW_SIZE, STEP_SIZE):
-        status = "Drift Detected" if result['is_drift'] else "Stable"
-        print(f"  Window [{result['window_start']}-{result['window_end']}]: "
-              f"Action={result['action']:<8} | Status={status:<15} | "
-              f"Final Error={result['final_error_rate']:.3f} | "
-              f"Time={result['processing_time_s']:.3f}s")
-        results.append(result)
-
-    if results:
-        results_df = pd.DataFrame(results)
-        avg_error = results_df['final_error_rate'].mean()
-        avg_time = results_df['processing_time_s'].mean()
-        rebuilds = results_df[results_df['action'] == 'Rebuilt'].shape[0]
-
-        print("\n--- IOLIN Final Test Summary ---")
-        print(f"Total windows processed: {len(results_df)}")
-        print(f"Number of rebuilds (drifts): {rebuilds} ({rebuilds/len(results_df)*100:.1f}%)")
-        print(f"Number of updates (stable): {len(results_df) - rebuilds}")
-        print(f"Average Error Rate: {avg_error:.3f}")
-        print(f"Average Processing Time per Window: {avg_time:.3f} seconds")
-    else:
-        print("No results generated. The test data stream might be too small for the window settings.")
-
