@@ -10,7 +10,7 @@ import time
 src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src'))
 sys.path.insert(0, src_path)
 
-from iolin_sk import IOLIN_SK_Forest
+from iolin_sk import IOLIN_SK_Boosted
 
 def run_sk_experiment():
     """Runs the full IOLIN-SK experiment and prints the summary."""
@@ -37,7 +37,7 @@ def run_sk_experiment():
     N_ESTIMATORS = 100 
     
     # Initialize IOLIN-SK processor
-    forest_processor = IOLIN_SK_Forest(
+    forest_processor = IOLIN_SK_Boosted(
         all_input_attributes=input_cols_list,
         target_attribute=target_col,
         n_estimators=N_ESTIMATORS
