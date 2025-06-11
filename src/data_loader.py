@@ -1,100 +1,62 @@
 # src/data_loader.py
-# This module will handle loading, cleaning, and preprocessing the data.
-# This version includes advanced feature engineering for high-performance models.
+# This module is now updated to process the Wine Quality dataset.
+# This will be a cleaner, easier benchmark to test our model's maximum potential.
 
 import pandas as pd
-import numpy as np
 import os
+import requests
+from io import StringIO
 
-# --- Configuration ---
-DATASET_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/00381/PRSA_data_2010.1.1-2014.12.31.csv"
-RAW_DATA_PATH = os.path.join("data", "raw", "beijing_pm25.csv")
-PROCESSED_DATA_PATH = os.path.join("data", "processed", "processed_beijing_pm25_advanced.csv") # New file name
+# --- Configuration for the Wine Dataset ---
+DATASET_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-red.csv"
+PROCESSED_DATA_PATH = os.path.join("data", "processed", "processed_wine_quality.csv")
 
-def fetch_data(url=DATASET_URL, path=RAW_DATA_PATH):
-    """Downloads the dataset if it doesn't already exist."""
-    if os.path.exists(path):
-        print(f"Dataset already exists at {path}")
-        return
-    print(f"Downloading dataset from {url}...")
+def fetch_wine_data(url=DATASET_URL):
+    """Downloads the dataset and returns it as a DataFrame."""
+    print(f"Downloading Wine Quality dataset from {url}...")
     try:
-        df = pd.read_csv(url)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        df.to_csv(path, index=False)
-        print(f"Dataset saved to {path}")
+        response = requests.get(url)
+        response.raise_for_status() # Will raise an exception for bad status codes
+        return pd.read_csv(StringIO(response.text), sep=';')
     except Exception as e:
         print(f"Failed to download dataset. Error: {e}")
         return None
 
-def preprocess_data_advanced(raw_path=RAW_DATA_PATH, processed_path=PROCESSED_DATA_PATH):
+def preprocess_wine_data(processed_path=PROCESSED_DATA_PATH):
     """
-    Loads raw data, cleans it, and engineers advanced time-series features.
+    Loads the raw wine data, discretizes the target, and saves the processed data.
     """
-    if not os.path.exists(raw_path):
-        print(f"Raw data not found at {raw_path}. Please fetch the data first.")
+    df = fetch_wine_data()
+    if df is None:
         return
 
-    print("Starting ADVANCED data preprocessing...")
-    df = pd.read_csv(raw_path)
+    print("--- Starting Wine Quality Data Preprocessing ---")
 
-    # 1. --- Data Cleaning ---
-    df['datetime'] = pd.to_datetime(df[['year', 'month', 'day', 'hour']])
-    df.set_index('datetime', inplace=True)
-    df['pm2.5'].fillna(method='ffill', inplace=True)
-    df['pm2.5'].fillna(method='bfill', inplace=True)
-    print("Missing values in 'pm2.5' handled.")
-
-    # 2. --- Advanced Feature Engineering ---
-    df_processed = pd.DataFrame(index=df.index)
+    # The dataset is already clean (no missing values).
+    # Our main task is to discretize the 'quality' target variable.
+    # Original quality is a score from 3 to 8.
     
-    # Keep some original features
-    df_processed['Dew_Point'] = df['DEWP']
-    df_processed['Temperature'] = df['TEMP']
-    df_processed['Pressure'] = df['PRES']
-    df_processed['Wind_Speed'] = df['Iws']
-
-    # --- Feature: Rolling Window Statistics ---
-    # Gives the model a sense of recent trends and volatility
-    for window in [3, 6, 12, 24]: # Last 3, 6, 12, 24 hours
-        df_processed[f'pm2.5_roll_mean_{window}h'] = df['pm2.5'].rolling(window=window).mean()
-        df_processed[f'pm2.5_roll_std_{window}h'] = df['pm2.5'].rolling(window=window).std()
-        df_processed[f'pm2.5_roll_min_{window}h'] = df['pm2.5'].rolling(window=window).min()
-        df_processed[f'pm2.5_roll_max_{window}h'] = df['pm2.5'].rolling(window=window).max()
-    print("Rolling window features created.")
-
-    # --- Feature: Lagged Features ---
-    for lag in [1, 2, 3, 24, 48, 168]: # 1h, 2h, 3h, 1d, 2d, 1w
-        df_processed[f'pm2.5_lag_{lag}h'] = df['pm2.5'].shift(lag)
-    print("Lagged features created.")
-
-    # --- Feature: Cyclical Time Features ---
-    # Helps the model understand the cyclical nature of time
-    df_processed['hour_sin'] = np.sin(2 * np.pi * df.index.hour / 24)
-    df_processed['hour_cos'] = np.cos(2 * np.pi * df.index.hour / 24)
-    df_processed['day_of_week_sin'] = np.sin(2 * np.pi * df.index.dayofweek / 7)
-    df_processed['day_of_week_cos'] = np.cos(2 * np.pi * df.index.dayofweek / 7)
-    df_processed['month_sin'] = np.sin(2 * np.pi * df.index.month / 12)
-    df_processed['month_cos'] = np.cos(2 * np.pi * df.index.month / 12)
-    print("Cyclical time features created.")
+    # We will create 3 classes:
+    # 0: Low Quality (quality < 6)
+    # 1: Medium Quality (quality = 6)
+    # 2: High Quality (quality > 6)
     
-    # 3. --- Target Attribute Creation ---
-    df_processed['Target'] = pd.qcut(
-        df['pm2.5'].shift(-1),
-        q=7,
-        labels=False,
-        duplicates='drop'
-    )
-    print("Target attribute created and discretized.")
-
-    # 4. --- Final Cleanup ---
-    df_processed.dropna(inplace=True)
-    df_processed['Target'] = df_processed['Target'].astype(int)
-
+    bins = [0, 5, 6, 10]
+    labels = [0, 1, 2] # Low, Medium, High
+    df['Target'] = pd.cut(df['quality'], bins=bins, labels=labels, right=True)
+    
+    # We can drop the original 'quality' column as 'Target' is our new objective
+    df_processed = df.drop(columns=['quality'])
+    
     # Save the processed data
-    df_processed.to_csv(processed_path)
-    print(f"Preprocessing complete. Advanced features saved to {processed_path}")
+    # Ensure the directory exists
+    os.makedirs(os.path.dirname(processed_path), exist_ok=True)
+    df_processed.to_csv(processed_path, index=False)
+    
+    print("Preprocessing complete. New dataset saved.")
     print(f"Final dataset shape: {df_processed.shape}")
+    print("\nTarget Class Distribution:")
+    print(df_processed['Target'].value_counts(normalize=True))
 
 if __name__ == '__main__':
-    fetch_data()
-    preprocess_data_advanced()
+    preprocess_wine_data()
